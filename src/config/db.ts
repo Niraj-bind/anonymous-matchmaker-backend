@@ -103,7 +103,7 @@ if (process.env.DATABASE_URL) {
       connectionTimeoutMillis: 5000,
       ssl: process.env.DATABASE_URL.includes('localhost') ? false : { rejectUnauthorized: false },
     });
-    pgPool.connect((err, client, release) => {
+    pgPool.connect((err: any, client: any, release: any) => {
       if (err) {
         console.warn('🗄️ PostgreSQL connection failed. Using local SQLite database (matchmaker.sqlite).');
         isPostgresAvailable = false;
