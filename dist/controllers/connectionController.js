@@ -6,7 +6,6 @@ exports.getConnections = getConnections;
 exports.getPersistentMessages = getPersistentMessages;
 exports.sendPersistentMessage = sendPersistentMessage;
 exports.permanentBlock = permanentBlock;
-exports.reportUser = reportUser;
 const uuid_1 = require("uuid");
 const db_1 = require("../config/db");
 const server_1 = require("../server");
@@ -51,15 +50,21 @@ async function requestConnection(req, res) {
         const insertResult = await (0, db_1.query)(`INSERT INTO connections (id, user_one, user_two, status)
        VALUES ($1, $2, $3, 'pending')
        RETURNING id, user_one, user_two, status, created_at`, [connectionId, userId, targetUser.id]);
+        const createdConn = insertResult.rows[0] || {
+            id: connectionId,
+            user_one: userId,
+            user_two: targetUser.id,
+            status: 'pending',
+            created_at: new Date().toISOString(),
+        };
+        // Emit real-time socket notification to recipient
+        server_1.io.to(`user:${targetUser.id}`).emit('connection_request_received', {
+            connection: createdConn,
+            senderUserId: userId,
+        });
         return res.status(201).json({
             message: 'Connection request sent successfully',
-            connection: insertResult.rows[0] || {
-                id: connectionId,
-                user_one: userId,
-                user_two: targetUser.id,
-                status: 'pending',
-                created_at: new Date().toISOString(),
-            },
+            connection: createdConn,
         });
     }
     catch (error) {
@@ -76,7 +81,7 @@ async function respondConnection(req, res) {
         }
         let targetConnection = null;
         if (connectionId) {
-            const connResult = await (0, db_1.query)('SELECT id, user_one, user_two, status FROM connections WHERE (id = $1 OR rowid = $1) AND (user_one = $2 OR user_two = $2)', [connectionId, userId]);
+            const connResult = await (0, db_1.query)('SELECT id, user_one, user_two, status FROM connections WHERE id = $1 AND (user_one = $2 OR user_two = $2)', [connectionId, userId]);
             if (connResult.rows.length > 0) {
                 targetConnection = connResult.rows[0];
             }
@@ -113,7 +118,7 @@ async function getConnections(req, res) {
         // Fetch accepted friends & pending incoming/outgoing requests, filtering out blocked users
         const queryText = `
       SELECT 
-        COALESCE(NULLIF(c.id, ''), c.rowid, lower(hex(randomblob(16)))) AS connection_id,
+        c.id AS connection_id,
         c.status,
         c.created_at,
         c.user_one,
@@ -132,7 +137,7 @@ async function getConnections(req, res) {
         const result = await (0, db_1.query)(queryText, [userId]);
         const rows = result.rows.map((row) => ({
             ...row,
-            connection_id: row.connection_id && String(row.connection_id).length > 0 ? String(row.connection_id) : (0, uuid_1.v4)(),
+            connection_id: String(row.connection_id),
         }));
         const accepted = rows.filter((r) => r.status === 'accepted');
         const pending = rows.filter((r) => r.status === 'pending');
@@ -150,7 +155,7 @@ async function getPersistentMessages(req, res) {
         if (!userId || !connectionId) {
             return res.status(400).json({ error: 'Connection ID required' });
         }
-        const connCheck = await (0, db_1.query)('SELECT id FROM connections WHERE (id = $1 OR rowid = $1) AND (user_one = $2 OR user_two = $2) AND status = \'accepted\'', [connectionId, userId]);
+        const connCheck = await (0, db_1.query)('SELECT id FROM connections WHERE id = $1 AND (user_one = $2 OR user_two = $2) AND status = \'accepted\'', [connectionId, userId]);
         if (connCheck.rows.length === 0) {
             return res.status(403).json({ error: 'Connection not found or not accepted' });
         }
@@ -158,7 +163,7 @@ async function getPersistentMessages(req, res) {
         const messagesResult = await (0, db_1.query)(`SELECT id, connection_id, sender_id, message_text, media_url, created_at
        FROM persistent_messages
        WHERE connection_id = $1
-       ORDER BY created_at ASC`, [targetConn.id || connectionId]);
+       ORDER BY created_at ASC`, [targetConn.id]);
         return res.status(200).json({ messages: messagesResult.rows });
     }
     catch (error) {
@@ -174,12 +179,12 @@ async function sendPersistentMessage(req, res) {
         if (!userId || !connectionId || (!messageText && !mediaUrl)) {
             return res.status(400).json({ error: 'Message text or media URL required' });
         }
-        const connCheck = await (0, db_1.query)('SELECT id, user_one, user_two FROM connections WHERE (id = $1 OR rowid = $1) AND (user_one = $2 OR user_two = $2) AND status = \'accepted\'', [connectionId, userId]);
+        const connCheck = await (0, db_1.query)('SELECT id, user_one, user_two FROM connections WHERE id = $1 AND (user_one = $2 OR user_two = $2) AND status = \'accepted\'', [connectionId, userId]);
         if (connCheck.rows.length === 0) {
             return res.status(403).json({ error: 'Active connection not found' });
         }
         const targetConn = connCheck.rows[0];
-        const realConnId = targetConn.id || connectionId;
+        const realConnId = targetConn.id;
         const receiverId = targetConn.user_one === userId ? targetConn.user_two : targetConn.user_one;
         const messageId = (0, uuid_1.v4)();
         const result = await (0, db_1.query)(`INSERT INTO persistent_messages (id, connection_id, sender_id, message_text, media_url)
@@ -193,14 +198,10 @@ async function sendPersistentMessage(req, res) {
             media_url: mediaUrl || null,
             created_at: new Date().toISOString(),
         };
-        try {
-            server_1.io.to(`user:${receiverId}`).to(`user:${userId}`).emit('new_persistent_message', createdMsg);
-        }
-        catch (e) {
-            console.warn('Could not broadcast persistent message live:', e);
-        }
+        // Emit real-time socket event to receiver
+        server_1.io.to(`user:${receiverId}`).emit('new_persistent_message', createdMsg);
         return res.status(201).json({
-            message: 'Message sent',
+            message: 'Message sent successfully',
             data: createdMsg,
         });
     }
@@ -214,37 +215,18 @@ async function permanentBlock(req, res) {
         const userId = req.user?.userId;
         const { targetUserId } = req.body;
         if (!userId || !targetUserId) {
-            return res.status(400).json({ error: 'Target User ID required' });
+            return res.status(400).json({ error: 'Target user ID required' });
         }
         const blockId = (0, uuid_1.v4)();
         await (0, db_1.query)(`INSERT INTO permanent_blocks (id, blocker_id, blocked_id)
        VALUES ($1, $2, $3)
        ON CONFLICT (blocker_id, blocked_id) DO NOTHING`, [blockId, userId, targetUserId]);
-        // Update connection status to 'blocked'
-        await (0, db_1.query)(`UPDATE connections 
-       SET status = 'blocked' 
-       WHERE (user_one = $1 AND user_two = $2) OR (user_one = $2 AND user_two = $1)`, [userId, targetUserId]);
-        return res.status(200).json({ message: 'User permanently blocked in Layer 2' });
+        // Remove any connection between the users
+        await (0, db_1.query)('DELETE FROM connections WHERE (user_one = $1 AND user_two = $2) OR (user_one = $2 AND user_two = $1)', [userId, targetUserId]);
+        return res.status(200).json({ message: 'User blocked permanently' });
     }
     catch (error) {
-        console.error('Error blocking user:', error);
-        return res.status(500).json({ error: 'Internal server error' });
-    }
-}
-async function reportUser(req, res) {
-    try {
-        const userId = req.user?.userId;
-        const { reportedUserId, reason, snapshotPayload } = req.body;
-        if (!userId || !reportedUserId || !reason) {
-            return res.status(400).json({ error: 'Reported user ID and reason required' });
-        }
-        const reportId = (0, uuid_1.v4)();
-        await (0, db_1.query)(`INSERT INTO reports (id, reporter_id, reported_id, reason, snapshot_payload)
-       VALUES ($1, $2, $3, $4, $5)`, [reportId, userId, reportedUserId, reason, JSON.stringify(snapshotPayload || {})]);
-        return res.status(200).json({ message: 'Report submitted successfully' });
-    }
-    catch (error) {
-        console.error('Error submitting report:', error);
+        console.error('Error blocking user permanently:', error);
         return res.status(500).json({ error: 'Internal server error' });
     }
 }
