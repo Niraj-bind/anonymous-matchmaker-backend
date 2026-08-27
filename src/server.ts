@@ -16,6 +16,7 @@ import {
 import { tempBlock, ratePartner, reportUser } from './controllers/anonymousController';
 import { uploadTempMedia, uploadPersistentMedia } from './controllers/uploadController';
 import { registerChatHandlers } from './sockets/chatHandler';
+import { processMatchmakerQueue } from './sockets/matchmaker';
 
 dotenv.config();
 
@@ -56,6 +57,15 @@ io.on('connection', (socket) => {
   registerChatHandlers(io, socket);
 });
 
+// Run continuous background matchmaker loop every 2 seconds
+setInterval(async () => {
+  try {
+    await processMatchmakerQueue(io);
+  } catch (e) {
+    console.error('Error in periodic matchmaker worker:', e);
+  }
+}, 2000);
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
@@ -72,23 +82,23 @@ app.post('/api/connections/respond', authenticateToken, respondConnection);
 app.get('/api/connections', authenticateToken, getConnections);
 app.get('/api/connections/:connectionId/messages', authenticateToken, getPersistentMessages);
 app.post('/api/connections/:connectionId/messages', authenticateToken, sendPersistentMessage);
-app.post('/api/connections/permanent-block', authenticateToken, permanentBlock);
+app.post('/api/connections/block', authenticateToken, permanentBlock);
 
-// Layer 1 & Decoupled Moderation Routes
+// Layer 1 Ephemeral Anonymous Chat Routes
 app.post('/api/anonymous/temp-block', authenticateToken, tempBlock);
 app.post('/api/anonymous/rate', authenticateToken, ratePartner);
 app.post('/api/anonymous/report', authenticateToken, reportUser);
 
-// Media Upload Routes (Both alias paths for seamless compatibility)
+// Temp & Persistent Media Upload Routes
 app.post('/api/upload/temp-media', authenticateToken, uploadTempMedia);
-app.post('/api/upload/temp', authenticateToken, uploadTempMedia);
 app.post('/api/upload/persistent-media', authenticateToken, uploadPersistentMedia);
-app.post('/api/upload/persistent', authenticateToken, uploadPersistentMedia);
 
-// Start HTTP & WebSocket Server
-server.listen(Number(PORT), '0.0.0.0', () => {
-  console.log(`=======================================================`);
-  console.log(`Matchmaker Backend Server running on port ${PORT} (host: 0.0.0.0)`);
-  console.log(`Zero-Footprint Anonymous Matchmaker & Decoupled Persistent Chat Ready`);
-  console.log(`=======================================================`);
+// Global Error Handler
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  console.error('Unhandled Express Error:', err);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
+server.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
 });

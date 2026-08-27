@@ -15,6 +15,7 @@ const connectionController_1 = require("./controllers/connectionController");
 const anonymousController_1 = require("./controllers/anonymousController");
 const uploadController_1 = require("./controllers/uploadController");
 const chatHandler_1 = require("./sockets/chatHandler");
+const matchmaker_1 = require("./sockets/matchmaker");
 dotenv_1.default.config();
 const app = (0, express_1.default)();
 const PORT = process.env.PORT || 4000;
@@ -47,6 +48,15 @@ exports.io.on('connection', (socket) => {
     }
     (0, chatHandler_1.registerChatHandlers)(exports.io, socket);
 });
+// Run continuous background matchmaker loop every 2 seconds
+setInterval(async () => {
+    try {
+        await (0, matchmaker_1.processMatchmakerQueue)(exports.io);
+    }
+    catch (e) {
+        console.error('Error in periodic matchmaker worker:', e);
+    }
+}, 2000);
 // Health check endpoint
 app.get('/health', (req, res) => {
     res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
@@ -61,20 +71,19 @@ app.post('/api/connections/respond', authMiddleware_1.authenticateToken, connect
 app.get('/api/connections', authMiddleware_1.authenticateToken, connectionController_1.getConnections);
 app.get('/api/connections/:connectionId/messages', authMiddleware_1.authenticateToken, connectionController_1.getPersistentMessages);
 app.post('/api/connections/:connectionId/messages', authMiddleware_1.authenticateToken, connectionController_1.sendPersistentMessage);
-app.post('/api/connections/permanent-block', authMiddleware_1.authenticateToken, connectionController_1.permanentBlock);
-// Layer 1 & Decoupled Moderation Routes
+app.post('/api/connections/block', authMiddleware_1.authenticateToken, connectionController_1.permanentBlock);
+// Layer 1 Ephemeral Anonymous Chat Routes
 app.post('/api/anonymous/temp-block', authMiddleware_1.authenticateToken, anonymousController_1.tempBlock);
 app.post('/api/anonymous/rate', authMiddleware_1.authenticateToken, anonymousController_1.ratePartner);
 app.post('/api/anonymous/report', authMiddleware_1.authenticateToken, anonymousController_1.reportUser);
-// Media Upload Routes (Both alias paths for seamless compatibility)
+// Temp & Persistent Media Upload Routes
 app.post('/api/upload/temp-media', authMiddleware_1.authenticateToken, uploadController_1.uploadTempMedia);
-app.post('/api/upload/temp', authMiddleware_1.authenticateToken, uploadController_1.uploadTempMedia);
 app.post('/api/upload/persistent-media', authMiddleware_1.authenticateToken, uploadController_1.uploadPersistentMedia);
-app.post('/api/upload/persistent', authMiddleware_1.authenticateToken, uploadController_1.uploadPersistentMedia);
-// Start HTTP & WebSocket Server
-exports.server.listen(Number(PORT), '0.0.0.0', () => {
-    console.log(`=======================================================`);
-    console.log(`Matchmaker Backend Server running on port ${PORT} (host: 0.0.0.0)`);
-    console.log(`Zero-Footprint Anonymous Matchmaker & Decoupled Persistent Chat Ready`);
-    console.log(`=======================================================`);
+// Global Error Handler
+app.use((err, req, res, next) => {
+    console.error('Unhandled Express Error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+});
+exports.server.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
 });

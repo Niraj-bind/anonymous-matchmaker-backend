@@ -56,18 +56,29 @@ export async function startMatching(io: Server, socket: Socket) {
   await redis.rpush('queue:anonymous', JSON.stringify(queueEntry));
   socket.emit('matching_started', { status: 'Waiting for partner...' });
 
-  // Evaluate queue
+  // Evaluate queue immediately
   await processMatchmakerQueue(io);
 }
 
 export async function removeFromQueue(socketId: string, userId?: string) {
   try {
     const rawQueue = await redis.lrange('queue:anonymous', 0, -1);
-    for (const item of rawQueue) {
-      const parsed: QueueEntry = JSON.parse(item);
-      if (parsed.socketId === socketId || (userId && parsed.userId === userId)) {
-        await redis.lrem('queue:anonymous', 0, item);
+    if (!rawQueue || rawQueue.length === 0) return;
+
+    const filtered = rawQueue.filter((item) => {
+      try {
+        const parsed: QueueEntry = JSON.parse(item);
+        if (parsed.socketId === socketId) return false;
+        if (userId && parsed.userId === userId) return false;
+        return true;
+      } catch (e) {
+        return false;
       }
+    });
+
+    await redis.del('queue:anonymous');
+    for (const item of filtered) {
+      await redis.rpush('queue:anonymous', item);
     }
   } catch (err) {
     console.error('Error removing socket from queue:', err);
@@ -80,12 +91,18 @@ export async function removeFromQueue(socketId: string, userId?: string) {
 export async function processMatchmakerQueue(io: Server) {
   try {
     const queueLength = await redis.llen('queue:anonymous');
-    console.log(`Evaluating matchmaker queue. Current queue length: ${queueLength}`);
     if (queueLength < 2) return;
+
+    console.log(`Evaluating matchmaker queue. Current queue length: ${queueLength}`);
 
     const firstRaw = await redis.lpop('queue:anonymous');
     if (!firstRaw) return;
-    const userA: QueueEntry = JSON.parse(firstRaw);
+    let userA: QueueEntry;
+    try {
+      userA = JSON.parse(firstRaw);
+    } catch (e) {
+      return processMatchmakerQueue(io);
+    }
 
     // Verify socket A is still connected
     const socketA = io.sockets.sockets.get(userA.socketId);
@@ -100,7 +117,12 @@ export async function processMatchmakerQueue(io: Server) {
     let candidateRawItem: string | null = null;
 
     for (const item of remainingRaw) {
-      const candidate: QueueEntry = JSON.parse(item);
+      let candidate: QueueEntry;
+      try {
+        candidate = JSON.parse(item);
+      } catch (e) {
+        continue;
+      }
 
       // Cannot pair socket with itself or user with themselves
       if (candidate.socketId === userA.socketId || candidate.userId === userA.userId) {
@@ -110,7 +132,7 @@ export async function processMatchmakerQueue(io: Server) {
       // Verify socket B is connected
       const socketB = io.sockets.sockets.get(candidate.socketId);
       if (!socketB || !socketB.connected) {
-        await redis.lrem('queue:anonymous', 0, item);
+        await removeFromQueue(candidate.socketId);
         continue;
       }
 
@@ -135,7 +157,7 @@ export async function processMatchmakerQueue(io: Server) {
     }
 
     // Remove candidate B from queue
-    await redis.lrem('queue:anonymous', 0, candidateRawItem);
+    await removeFromQueue(matchedCandidate.socketId, matchedCandidate.userId);
 
     const userB = matchedCandidate;
     const socketB = io.sockets.sockets.get(userB.socketId);
@@ -183,22 +205,31 @@ export async function processMatchmakerQueue(io: Server) {
       console.warn('Could not fetch ratings, using default 5.0:', e);
     }
 
-    // Emit match_found
-    socketA.emit('match_found', {
+    const payloadA = {
       sessionId,
       partnerUserId: userB.userId,
       partnerRating: ratingB,
       status: 'Partner connected!',
-    });
+    };
 
-    socketB.emit('match_found', {
+    const payloadB = {
       sessionId,
       partnerUserId: userA.userId,
       partnerRating: ratingA,
       status: 'Partner connected!',
-    });
+    };
+
+    // Emit match_found across multiple channels for 100% delivery guarantee
+    socketA.emit('match_found', payloadA);
+    io.to(socketA.id).emit('match_found', payloadA);
+
+    socketB.emit('match_found', payloadB);
+    io.to(socketB.id).emit('match_found', payloadB);
 
     console.log(`✨ MATCH SUCCESSFUL! Room ${sessionId} created for Socket A (${socketA.id}) and Socket B (${socketB.id})`);
+    
+    // Check if more users are waiting in queue
+    processMatchmakerQueue(io);
   } catch (error) {
     console.error('Error processing matchmaker queue:', error);
   }
