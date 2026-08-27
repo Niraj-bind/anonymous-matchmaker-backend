@@ -13,6 +13,64 @@ let sqliteDb: sqlite3.Database | null = null;
 
 const dbFilePath = path.join(__dirname, '../../matchmaker.sqlite');
 
+async function initPostgresSchema() {
+  if (!pgPool) return;
+  console.log('🗄️ Database: Initializing PostgreSQL database schema...');
+  try {
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        username TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        app_id TEXT UNIQUE NOT NULL,
+        age INTEGER NOT NULL CHECK (age >= 18),
+        gender TEXT NOT NULL,
+        total_stars INTEGER NOT NULL DEFAULT 5,
+        total_ratings INTEGER NOT NULL DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS connections (
+        id TEXT PRIMARY KEY,
+        user_one TEXT NOT NULL,
+        user_two TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_one, user_two)
+      );
+
+      CREATE TABLE IF NOT EXISTS persistent_messages (
+        id TEXT PRIMARY KEY,
+        connection_id TEXT NOT NULL,
+        sender_id TEXT NOT NULL,
+        message_text TEXT,
+        media_url TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS permanent_blocks (
+        id TEXT PRIMARY KEY,
+        blocker_id TEXT NOT NULL,
+        blocked_id TEXT NOT NULL,
+        blocked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(blocker_id, blocked_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS reports (
+        id TEXT PRIMARY KEY,
+        reporter_id TEXT NOT NULL,
+        reported_id TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        snapshot_payload TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    console.log('🗄️ PostgreSQL schema initialized successfully.');
+  } catch (err) {
+    console.error('Failed to initialize PostgreSQL schema:', err);
+  }
+}
+
 function initSqliteSchema() {
   if (!sqliteDb) return;
   console.log('🗄️ Database: Initializing local SQLite database schema...');
@@ -103,14 +161,15 @@ if (process.env.DATABASE_URL) {
       connectionTimeoutMillis: 5000,
       ssl: process.env.DATABASE_URL.includes('localhost') ? false : { rejectUnauthorized: false },
     });
-    pgPool.connect((err: any, client: any, release: any) => {
+    pgPool.connect(async (err: any, client: any, release: any) => {
       if (err) {
-        console.warn('🗄️ PostgreSQL connection failed. Using local SQLite database (matchmaker.sqlite).');
+        console.warn('🗄️ PostgreSQL connection failed. Using local SQLite database (matchmaker.sqlite). Error:', err.message);
         isPostgresAvailable = false;
       } else {
         console.log('🗄️ Connected to PostgreSQL database.');
         isPostgresAvailable = true;
         release();
+        await initPostgresSchema();
       }
     });
   } catch (e) {
