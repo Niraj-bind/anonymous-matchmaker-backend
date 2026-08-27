@@ -39,8 +39,8 @@ async function startMatching(io, socket) {
         return;
     }
     console.log(`Socket ${socket.id} (User: ${userId}) joined matchmaking queue.`);
-    // Remove existing queued entry if any
-    await removeFromQueue(socket.id);
+    // Remove existing queued entry for this socket OR user if any
+    await removeFromQueue(socket.id, userId);
     const queueEntry = {
         socketId: socket.id,
         userId: userId,
@@ -51,12 +51,12 @@ async function startMatching(io, socket) {
     // Evaluate queue
     await processMatchmakerQueue(io);
 }
-async function removeFromQueue(socketId) {
+async function removeFromQueue(socketId, userId) {
     try {
         const rawQueue = await redis_1.redis.lrange('queue:anonymous', 0, -1);
         for (const item of rawQueue) {
             const parsed = JSON.parse(item);
-            if (parsed.socketId === socketId) {
+            if (parsed.socketId === socketId || (userId && parsed.userId === userId)) {
                 await redis_1.redis.lrem('queue:anonymous', 0, item);
             }
         }
@@ -90,8 +90,8 @@ async function processMatchmakerQueue(io) {
         let candidateRawItem = null;
         for (const item of remainingRaw) {
             const candidate = JSON.parse(item);
-            // Cannot pair socket with itself
-            if (candidate.socketId === userA.socketId) {
+            // Cannot pair socket with itself or user with themselves
+            if (candidate.socketId === userA.socketId || candidate.userId === userA.userId) {
                 continue;
             }
             // Verify socket B is connected
