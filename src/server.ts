@@ -17,6 +17,7 @@ import {
 import { tempBlock, ratePartner, reportUser } from './controllers/anonymousController';
 import { uploadTempMedia, uploadPersistentMedia } from './controllers/uploadController';
 import { registerChatHandlers } from './sockets/chatHandler';
+import { registerCallHandlers } from './sockets/callHandler';
 import { processMatchmakerQueue } from './sockets/matchmaker';
 
 dotenv.config();
@@ -78,6 +79,7 @@ io.on('connection', (socket) => {
     socket.join(`user:${userId}`);
   }
   registerChatHandlers(io, socket);
+  registerCallHandlers(io, socket);
 });
 
 // Run continuous background matchmaker loop every 2 seconds

@@ -16,6 +16,7 @@ const connectionController_1 = require("./controllers/connectionController");
 const anonymousController_1 = require("./controllers/anonymousController");
 const uploadController_1 = require("./controllers/uploadController");
 const chatHandler_1 = require("./sockets/chatHandler");
+const callHandler_1 = require("./sockets/callHandler");
 const matchmaker_1 = require("./sockets/matchmaker");
 dotenv_1.default.config();
 const app = (0, express_1.default)();
@@ -67,6 +68,7 @@ exports.io.on('connection', (socket) => {
         socket.join(`user:${userId}`);
     }
     (0, chatHandler_1.registerChatHandlers)(exports.io, socket);
+    (0, callHandler_1.registerCallHandlers)(exports.io, socket);
 });
 // Run continuous background matchmaker loop every 2 seconds
 const matchmakerInterval = setInterval(async () => {
