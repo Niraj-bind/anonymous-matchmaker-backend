@@ -47,8 +47,11 @@ async function register(req, res) {
         if (!username || !password || age === undefined || !gender) {
             return res.status(400).json({ error: 'Username, password, age, and gender are required' });
         }
-        if (username.length < 3 || username.length > 32) {
+        if (username.trim().length < 3 || username.trim().length > 32) {
             return res.status(400).json({ error: 'Username must be between 3 and 32 characters' });
+        }
+        if (password.length < 6) {
+            return res.status(400).json({ error: 'Password must be at least 6 characters long' });
         }
         const parsedAge = parseInt(age, 10);
         if (isNaN(parsedAge) || parsedAge < 18) {

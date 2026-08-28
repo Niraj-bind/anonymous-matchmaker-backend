@@ -9,6 +9,7 @@ const http_1 = __importDefault(require("http"));
 const socket_io_1 = require("socket.io");
 const cors_1 = __importDefault(require("cors"));
 const dotenv_1 = __importDefault(require("dotenv"));
+const express_rate_limit_1 = __importDefault(require("express-rate-limit"));
 const authMiddleware_1 = require("./middleware/authMiddleware");
 const authController_1 = require("./controllers/authController");
 const connectionController_1 = require("./controllers/connectionController");
@@ -19,13 +20,30 @@ const matchmaker_1 = require("./sockets/matchmaker");
 dotenv_1.default.config();
 const app = (0, express_1.default)();
 const PORT = process.env.PORT || 4000;
+// Rate Limiters
+const authLimiter = (0, express_rate_limit_1.default)({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 30, // Limit each IP to 30 requests per 15 mins for auth
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many authentication attempts, please try again later.' },
+});
+const apiLimiter = (0, express_rate_limit_1.default)({
+    windowMs: 1 * 60 * 1000, // 1 minute
+    max: 120, // 120 requests per minute
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many requests, please slow down.' },
+});
 // Core Express Middleware
 app.use((0, cors_1.default)());
 app.use(express_1.default.json({ limit: '50mb' }));
 app.use(express_1.default.urlencoded({ extended: true, limit: '50mb' }));
-// Logging middleware for development
+// Sanitized Logging Middleware
 app.use((req, res, next) => {
-    console.log(`[HTTP ${new Date().toISOString()}] ${req.method} ${req.url} - Body: ${JSON.stringify(req.body)}`);
+    const isSensitive = req.url.includes('/auth') || req.url.includes('/upload');
+    const safeBody = isSensitive ? '[REDACTED]' : JSON.stringify(req.body);
+    console.log(`[HTTP ${new Date().toISOString()}] ${req.method} ${req.url} - ${safeBody}`);
     next();
 });
 // Create HTTP & Socket.io Server
@@ -37,6 +55,8 @@ exports.io = new socket_io_1.Server(exports.server, {
     },
     maxHttpBufferSize: 1e7, // 10MB
 });
+// Register io on Express app to avoid circular imports
+app.set('io', exports.io);
 // Socket Authentication Middleware
 exports.io.use(authMiddleware_1.socketAuthMiddleware);
 // Socket Event Connection Handler
@@ -49,7 +69,7 @@ exports.io.on('connection', (socket) => {
     (0, chatHandler_1.registerChatHandlers)(exports.io, socket);
 });
 // Run continuous background matchmaker loop every 2 seconds
-setInterval(async () => {
+const matchmakerInterval = setInterval(async () => {
     try {
         await (0, matchmaker_1.processMatchmakerQueue)(exports.io);
     }
@@ -61,9 +81,11 @@ setInterval(async () => {
 app.get('/health', (req, res) => {
     res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
 });
+// Apply API Rate Limiter
+app.use('/api/', apiLimiter);
 // Auth Routes (Zero-Personal-Data)
-app.post('/api/auth/register', authController_1.register);
-app.post('/api/auth/login', authController_1.login);
+app.post('/api/auth/register', authLimiter, authController_1.register);
+app.post('/api/auth/login', authLimiter, authController_1.login);
 app.get('/api/auth/me', authMiddleware_1.authenticateToken, authController_1.getMe);
 // Layer 2 Persistent Connections & DM Routes
 app.post('/api/connections/request', authMiddleware_1.authenticateToken, connectionController_1.requestConnection);
@@ -83,6 +105,15 @@ app.post('/api/upload/persistent-media', authMiddleware_1.authenticateToken, upl
 app.use((err, req, res, next) => {
     console.error('Unhandled Express Error:', err);
     res.status(500).json({ error: 'Internal server error' });
+});
+// Graceful shutdown handling for Render
+process.on('SIGTERM', () => {
+    console.log('SIGTERM signal received. Closing HTTP server and matchmaker loop...');
+    clearInterval(matchmakerInterval);
+    exports.server.close(() => {
+        console.log('HTTP server closed.');
+        process.exit(0);
+    });
 });
 exports.server.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);

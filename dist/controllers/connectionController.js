@@ -8,7 +8,13 @@ exports.sendPersistentMessage = sendPersistentMessage;
 exports.permanentBlock = permanentBlock;
 const uuid_1 = require("uuid");
 const db_1 = require("../config/db");
-const server_1 = require("../server");
+/**
+ * Helper to get Socket.IO instance from Express app.
+ * Avoids circular import between server.ts and connectionController.ts.
+ */
+function getIO(req) {
+    return req.app.get('io');
+}
 async function requestConnection(req, res) {
     try {
         const userId = req.user?.userId;
@@ -46,6 +52,7 @@ async function requestConnection(req, res) {
             }
         }
         // Insert new pending connection request
+        // user_one = sender, user_two = recipient
         const connectionId = (0, uuid_1.v4)();
         const insertResult = await (0, db_1.query)(`INSERT INTO connections (id, user_one, user_two, status)
        VALUES ($1, $2, $3, 'pending')
@@ -58,10 +65,13 @@ async function requestConnection(req, res) {
             created_at: new Date().toISOString(),
         };
         // Emit real-time socket notification to recipient
-        server_1.io.to(`user:${targetUser.id}`).emit('connection_request_received', {
-            connection: createdConn,
-            senderUserId: userId,
-        });
+        const io = getIO(req);
+        if (io) {
+            io.to(`user:${targetUser.id}`).emit('connection_request_received', {
+                connection: createdConn,
+                senderUserId: userId,
+            });
+        }
         return res.status(201).json({
             message: 'Connection request sent successfully',
             connection: createdConn,
@@ -95,13 +105,37 @@ async function respondConnection(req, res) {
         if (!targetConnection) {
             return res.status(404).json({ error: 'Pending connection request not found' });
         }
+        // SECURITY FIX: Only the RECIPIENT (user_two) can accept or decline a connection request.
+        // The sender (user_one) must not be allowed to accept their own request.
+        if (targetConnection.user_two !== userId) {
+            return res.status(403).json({ error: 'Only the recipient can respond to a connection request' });
+        }
+        if (targetConnection.status !== 'pending') {
+            return res.status(400).json({ error: `Connection is already ${targetConnection.status}` });
+        }
         const realConnectionId = targetConnection.id;
+        const senderId = targetConnection.user_one; // The original sender
+        const io = getIO(req);
         if (action === 'accept') {
             await (0, db_1.query)('UPDATE connections SET status = \'accepted\' WHERE id = $1', [realConnectionId]);
+            // Notify the sender that their request was accepted (real-time)
+            if (io) {
+                io.to(`user:${senderId}`).emit('connection_accepted', {
+                    connectionId: realConnectionId,
+                    acceptedBy: userId,
+                });
+            }
             return res.status(200).json({ message: 'Connection request accepted' });
         }
         else {
             await (0, db_1.query)('DELETE FROM connections WHERE id = $1', [realConnectionId]);
+            // Notify the sender that their request was declined (real-time)
+            if (io) {
+                io.to(`user:${senderId}`).emit('connection_declined', {
+                    connectionId: realConnectionId,
+                    declinedBy: userId,
+                });
+            }
             return res.status(200).json({ message: 'Connection request declined' });
         }
     }
@@ -160,11 +194,26 @@ async function getPersistentMessages(req, res) {
             return res.status(403).json({ error: 'Connection not found or not accepted' });
         }
         const targetConn = connCheck.rows[0];
-        const messagesResult = await (0, db_1.query)(`SELECT id, connection_id, sender_id, message_text, media_url, created_at
+        // Pagination: cursor-based using 'before' timestamp + limit
+        const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+        const before = req.query.before;
+        let messagesQuery = `SELECT id, connection_id, sender_id, message_text, media_url, created_at
        FROM persistent_messages
-       WHERE connection_id = $1
-       ORDER BY created_at ASC`, [targetConn.id]);
-        return res.status(200).json({ messages: messagesResult.rows });
+       WHERE connection_id = $1`;
+        const params = [targetConn.id];
+        if (before) {
+            messagesQuery += ` AND created_at < $2`;
+            params.push(before);
+        }
+        messagesQuery += ` ORDER BY created_at DESC LIMIT $${params.length + 1}`;
+        params.push(limit);
+        const messagesResult = await (0, db_1.query)(messagesQuery, params);
+        // Reverse to chronological order for display
+        const messages = messagesResult.rows.reverse();
+        return res.status(200).json({
+            messages,
+            hasMore: messagesResult.rows.length === limit,
+        });
     }
     catch (error) {
         console.error('Error fetching persistent messages:', error);
@@ -199,7 +248,12 @@ async function sendPersistentMessage(req, res) {
             created_at: new Date().toISOString(),
         };
         // Emit real-time socket event to receiver
-        server_1.io.to(`user:${receiverId}`).emit('new_persistent_message', createdMsg);
+        const io = getIO(req);
+        if (io) {
+            io.to(`user:${receiverId}`).emit('new_persistent_message', createdMsg);
+            // Also emit to sender for instant UI update without needing to refresh
+            io.to(`user:${userId}`).emit('new_persistent_message', createdMsg);
+        }
         return res.status(201).json({
             message: 'Message sent successfully',
             data: createdMsg,
@@ -221,7 +275,12 @@ async function permanentBlock(req, res) {
         await (0, db_1.query)(`INSERT INTO permanent_blocks (id, blocker_id, blocked_id)
        VALUES ($1, $2, $3)
        ON CONFLICT (blocker_id, blocked_id) DO NOTHING`, [blockId, userId, targetUserId]);
-        // Remove any connection between the users
+        // Find and delete persistent messages for any connection between these users
+        const connResult = await (0, db_1.query)('SELECT id FROM connections WHERE (user_one = $1 AND user_two = $2) OR (user_one = $2 AND user_two = $1)', [userId, targetUserId]);
+        for (const conn of connResult.rows) {
+            await (0, db_1.query)('DELETE FROM persistent_messages WHERE connection_id = $1', [conn.id]);
+        }
+        // Remove the connection itself
         await (0, db_1.query)('DELETE FROM connections WHERE (user_one = $1 AND user_two = $2) OR (user_one = $2 AND user_two = $1)', [userId, targetUserId]);
         return res.status(200).json({ message: 'User blocked permanently' });
     }

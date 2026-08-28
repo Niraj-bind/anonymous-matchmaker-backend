@@ -1,4 +1,5 @@
 import { Response } from 'express';
+import { v4 as uuidv4 } from 'uuid';
 import { redis } from '../config/redis';
 import { query } from '../config/db';
 import { AuthenticatedRequest } from '../middleware/authMiddleware';
@@ -87,10 +88,11 @@ export async function reportUser(req: AuthenticatedRequest, res: Response) {
       return res.status(400).json({ error: 'Reporter, reported user, reason, and snapshot payload are required' });
     }
 
+    const reportId = uuidv4();
     await query(
-      `INSERT INTO reports (reporter_id, reported_id, reason, snapshot_payload)
-       VALUES ($1, $2, $3, $4)`,
-      [reporterId, reportedUserId, reason, JSON.stringify(snapshotPayload)]
+      `INSERT INTO reports (id, reporter_id, reported_id, reason, snapshot_payload)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [reportId, reporterId, reportedUserId, reason, JSON.stringify(snapshotPayload)]
     );
 
     return res.status(201).json({

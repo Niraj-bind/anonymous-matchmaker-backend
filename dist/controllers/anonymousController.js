@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.tempBlock = tempBlock;
 exports.ratePartner = ratePartner;
 exports.reportUser = reportUser;
+const uuid_1 = require("uuid");
 const redis_1 = require("../config/redis");
 const db_1 = require("../config/db");
 /**
@@ -74,8 +75,9 @@ async function reportUser(req, res) {
         if (!reporterId || !reportedUserId || !reason || !snapshotPayload) {
             return res.status(400).json({ error: 'Reporter, reported user, reason, and snapshot payload are required' });
         }
-        await (0, db_1.query)(`INSERT INTO reports (reporter_id, reported_id, reason, snapshot_payload)
-       VALUES ($1, $2, $3, $4)`, [reporterId, reportedUserId, reason, JSON.stringify(snapshotPayload)]);
+        const reportId = (0, uuid_1.v4)();
+        await (0, db_1.query)(`INSERT INTO reports (id, reporter_id, reported_id, reason, snapshot_payload)
+       VALUES ($1, $2, $3, $4, $5)`, [reportId, reporterId, reportedUserId, reason, JSON.stringify(snapshotPayload)]);
         return res.status(201).json({
             message: 'Report submitted. Our moderation system will review the snapshot payload.',
         });
