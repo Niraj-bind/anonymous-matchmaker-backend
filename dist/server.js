@@ -103,6 +103,11 @@ app.post('/api/anonymous/report', authMiddleware_1.authenticateToken, anonymousC
 // Temp & Persistent Media Upload Routes
 app.post('/api/upload/temp-media', authMiddleware_1.authenticateToken, uploadController_1.uploadTempMedia);
 app.post('/api/upload/persistent-media', authMiddleware_1.authenticateToken, uploadController_1.uploadPersistentMedia);
+// WebRTC ICE Servers Configuration Route
+const iceServers_1 = require("./config/iceServers");
+app.get('/api/calls/ice-servers', authMiddleware_1.authenticateToken, (req, res) => {
+    res.status(200).json({ iceServers: (0, iceServers_1.getIceServers)() });
+});
 // Global Error Handler
 app.use((err, req, res, next) => {
     console.error('Unhandled Express Error:', err);

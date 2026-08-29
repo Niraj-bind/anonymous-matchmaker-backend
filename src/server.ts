@@ -121,6 +121,12 @@ app.post('/api/anonymous/report', authenticateToken, reportUser);
 app.post('/api/upload/temp-media', authenticateToken, uploadTempMedia);
 app.post('/api/upload/persistent-media', authenticateToken, uploadPersistentMedia);
 
+// WebRTC ICE Servers Configuration Route
+import { getIceServers } from './config/iceServers';
+app.get('/api/calls/ice-servers', authenticateToken, (req, res) => {
+  res.status(200).json({ iceServers: getIceServers() });
+});
+
 // Global Error Handler
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
   console.error('Unhandled Express Error:', err);

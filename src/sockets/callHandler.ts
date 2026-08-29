@@ -2,13 +2,19 @@ import { Server, Socket } from 'socket.io';
 import { v4 as uuidv4 } from 'uuid';
 import { query } from '../config/db';
 import { redis } from '../config/redis';
+import { getIceServers } from '../config/iceServers';
 
 /**
  * WebRTC Voice Calling Signaling Handler
- * Manages 1-on-1 voice call state, offers, answers, and ICE candidate relaying.
+ * Manages 1-on-1 voice call state, offers, answers, ICE candidate relaying, and ICE server distribution.
  */
 export function registerCallHandlers(io: Server, socket: Socket) {
   const userId = socket.data.user?.userId;
+
+  // 0. Dynamic ICE Servers Request
+  socket.on('get_ice_servers', () => {
+    socket.emit('ice_servers', { iceServers: getIceServers() });
+  });
 
   // 1. Initiate Voice Call (Caller -> Callee)
   socket.on('call_user', async (data: { targetUserId: string; connectionId: string; isVideo?: boolean }) => {
@@ -54,12 +60,20 @@ export function registerCallHandlers(io: Server, socket: Socket) {
       const callerInfo = callerResult.rows[0] || {};
 
       const callId = uuidv4();
+      const iceServers = getIceServers();
 
       // Track active call state in Redis (TTL = 2 hours max call timeout)
       await redis.set(`active_call:${userId}`, JSON.stringify({ callId, peerId: targetUserId, role: 'caller' }), 'EX', 7200);
       await redis.set(`active_call:${targetUserId}`, JSON.stringify({ callId, peerId: userId, role: 'callee' }), 'EX', 7200);
 
       console.log(`📞 Voice Call initiated: ${userId} (${callerInfo.username}) calling ${targetUserId} (Call ID: ${callId})`);
+
+      // Provide ICE configuration directly to caller
+      socket.emit('call_initiated', {
+        callId,
+        targetUserId,
+        iceServers,
+      });
 
       // Emit incoming_call event to recipient room
       io.to(`user:${targetUserId}`).emit('incoming_call', {
@@ -69,6 +83,7 @@ export function registerCallHandlers(io: Server, socket: Socket) {
         callerAppId: callerInfo.app_id,
         connectionId,
         isVideo: !!isVideo,
+        iceServers,
         timestamp: new Date().toISOString(),
       });
     } catch (error) {
@@ -84,10 +99,20 @@ export function registerCallHandlers(io: Server, socket: Socket) {
       if (!userId || !callerUserId || !callId) return;
 
       console.log(`✅ Voice Call accepted by ${userId} from caller ${callerUserId} (Call ID: ${callId})`);
+      const iceServers = getIceServers();
 
+      // Notify caller that call was accepted
       io.to(`user:${callerUserId}`).emit('call_accepted', {
         callId,
         acceptedBy: userId,
+        iceServers,
+      });
+
+      // Confirm to callee
+      socket.emit('call_connected', {
+        callId,
+        peerId: callerUserId,
+        iceServers,
       });
     } catch (error) {
       console.error('Error accepting call:', error);
@@ -117,40 +142,61 @@ export function registerCallHandlers(io: Server, socket: Socket) {
   });
 
   // 4. WebRTC SDP Offer Relay (Caller -> Callee)
-  socket.on('webrtc_offer', (data: { targetUserId: string; sdp: any; callId: string }) => {
+  const handleOffer = (data: { targetUserId: string; sdp: any; callId: string }) => {
     const { targetUserId, sdp, callId } = data;
     if (!userId || !targetUserId || !sdp) return;
 
-    io.to(`user:${targetUserId}`).emit('webrtc_offer', {
+    console.log(`📨 WebRTC Offer Relayed: from ${userId} -> to ${targetUserId}`);
+
+    const payload = {
       senderId: userId,
       sdp,
       callId,
-    });
-  });
+    };
+    io.to(`user:${targetUserId}`).emit('webrtc_offer', payload);
+    io.to(`user:${targetUserId}`).emit('offer', payload);
+  };
+
+  socket.on('webrtc_offer', handleOffer);
+  socket.on('offer', handleOffer);
 
   // 5. WebRTC SDP Answer Relay (Callee -> Caller)
-  socket.on('webrtc_answer', (data: { targetUserId: string; sdp: any; callId: string }) => {
+  const handleAnswer = (data: { targetUserId: string; sdp: any; callId: string }) => {
     const { targetUserId, sdp, callId } = data;
     if (!userId || !targetUserId || !sdp) return;
 
-    io.to(`user:${targetUserId}`).emit('webrtc_answer', {
+    console.log(`📨 WebRTC Answer Relayed: from ${userId} -> to ${targetUserId}`);
+
+    const payload = {
       senderId: userId,
       sdp,
       callId,
-    });
-  });
+    };
+    io.to(`user:${targetUserId}`).emit('webrtc_answer', payload);
+    io.to(`user:${targetUserId}`).emit('answer', payload);
+  };
+
+  socket.on('webrtc_answer', handleAnswer);
+  socket.on('answer', handleAnswer);
 
   // 6. WebRTC ICE Candidate Relay (Bidirectional)
-  socket.on('ice_candidate', (data: { targetUserId: string; candidate: any; callId: string }) => {
+  const handleIceCandidate = (data: { targetUserId: string; candidate: any; callId: string }) => {
     const { targetUserId, candidate, callId } = data;
     if (!userId || !targetUserId || !candidate) return;
 
-    io.to(`user:${targetUserId}`).emit('ice_candidate', {
+    const payload = {
       senderId: userId,
       candidate,
       callId,
-    });
-  });
+    };
+    io.to(`user:${targetUserId}`).emit('ice_candidate', payload);
+    io.to(`user:${targetUserId}`).emit('webrtc_ice_candidate', payload);
+    io.to(`user:${targetUserId}`).emit('candidate', payload);
+  };
+
+  socket.on('ice_candidate', handleIceCandidate);
+  socket.on('webrtc_ice_candidate', handleIceCandidate);
+  socket.on('candidate', handleIceCandidate);
 
   // 7. End Call / Hang Up
   socket.on('end_call', async (data: { targetUserId: string; callId?: string }) => {
