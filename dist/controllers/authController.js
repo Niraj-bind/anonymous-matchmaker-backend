@@ -57,11 +57,16 @@ async function register(req, res) {
         if (isNaN(parsedAge) || parsedAge < 18) {
             return res.status(400).json({ error: 'You must be at least 18 years old' });
         }
-        if (gender !== 'man' && gender !== 'woman') {
-            return res.status(400).json({ error: 'Gender must be either "man" or "woman"' });
+        let normalizedGender = String(gender).trim().toLowerCase();
+        if (normalizedGender === 'male')
+            normalizedGender = 'man';
+        if (normalizedGender === 'female')
+            normalizedGender = 'woman';
+        if (normalizedGender !== 'man' && normalizedGender !== 'woman') {
+            return res.status(400).json({ error: 'Gender must be either "man" (or "male") or "woman" (or "female")' });
         }
         // Check if username exists
-        const userCheck = await (0, db_1.query)('SELECT id FROM users WHERE username = $1', [username]);
+        const userCheck = await (0, db_1.query)('SELECT id FROM users WHERE username = $1', [username.trim()]);
         if (userCheck.rows.length > 0) {
             return res.status(409).json({ error: 'Username already taken' });
         }
@@ -71,13 +76,13 @@ async function register(req, res) {
         const appId = await generateUniqueAppId();
         const insertResult = await (0, db_1.query)(`INSERT INTO users (id, username, password_hash, app_id, age, gender, total_stars, total_ratings)
        VALUES ($1, $2, $3, $4, $5, $6, 5, 1)
-       RETURNING id, username, app_id, age, gender, total_stars, total_ratings, created_at`, [userId, username, passwordHash, appId, parsedAge, gender]);
+       RETURNING id, username, app_id, age, gender, total_stars, total_ratings, created_at`, [userId, username.trim(), passwordHash, appId, parsedAge, normalizedGender]);
         const newUser = insertResult.rows[0] || {
             id: userId,
-            username,
+            username: username.trim(),
             app_id: appId,
             age: parsedAge,
-            gender,
+            gender: normalizedGender,
             total_stars: 5,
             total_ratings: 1,
             created_at: new Date().toISOString(),
@@ -88,10 +93,10 @@ async function register(req, res) {
             token,
             user: {
                 id: newUser.id || userId,
-                username: newUser.username || username,
+                username: newUser.username || username.trim(),
                 appId: newUser.app_id || appId,
                 age: newUser.age || parsedAge,
-                gender: newUser.gender || gender,
+                gender: newUser.gender || normalizedGender,
                 rating: parseFloat(rating.toFixed(2)),
                 createdAt: newUser.created_at || new Date().toISOString(),
             },
@@ -99,7 +104,7 @@ async function register(req, res) {
     }
     catch (error) {
         console.error('Error during user registration:', error);
-        return res.status(500).json({ error: 'Internal server error' });
+        return res.status(500).json({ error: 'Internal server error', details: error?.message });
     }
 }
 async function login(req, res) {
