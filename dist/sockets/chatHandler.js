@@ -138,6 +138,10 @@ function registerChatHandlers(io, socket) {
             });
             // Start 6-second disconnect grace timeout
             console.log(`Socket ${socket.id} disconnected. Starting 6-second grace timer for session ${sessionId}...`);
+            const existingTimer = graceTimers.get(sessionId);
+            if (existingTimer) {
+                clearTimeout(existingTimer);
+            }
             const timer = setTimeout(async () => {
                 graceTimers.delete(sessionId);
                 await onRoomClosed(io, sessionId, 'Partner disconnected');

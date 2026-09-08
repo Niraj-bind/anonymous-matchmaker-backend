@@ -19,6 +19,8 @@ import { uploadTempMedia, uploadPersistentMedia } from './controllers/uploadCont
 import { registerChatHandlers } from './sockets/chatHandler';
 import { registerCallHandlers } from './sockets/callHandler';
 import { processMatchmakerQueue } from './sockets/matchmaker';
+import { getIceServers } from './config/iceServers';
+import { updateDeviceToken, getAndroidConfig } from './controllers/androidController';
 
 dotenv.config();
 
@@ -63,6 +65,9 @@ export const io = new Server(server, {
     methods: ['GET', 'POST'],
   },
   maxHttpBufferSize: 1e7, // 10MB
+  pingInterval: 10000,
+  pingTimeout: 15000,
+  transports: ['websocket', 'polling'],
 });
 
 // Register io on Express app to avoid circular imports
@@ -122,10 +127,13 @@ app.post('/api/upload/temp-media', authenticateToken, uploadTempMedia);
 app.post('/api/upload/persistent-media', authenticateToken, uploadPersistentMedia);
 
 // WebRTC ICE Servers Configuration Route
-import { getIceServers } from './config/iceServers';
 app.get('/api/calls/ice-servers', authenticateToken, (req, res) => {
   res.status(200).json({ iceServers: getIceServers() });
 });
+
+// Dedicated Android Client Endpoints
+app.post('/api/android/device-token', authenticateToken, updateDeviceToken);
+app.get('/api/android/config', getAndroidConfig);
 
 // Global Error Handler
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {

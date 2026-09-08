@@ -32,6 +32,11 @@ async function initPostgresSchema() {
       CREATE INDEX IF NOT EXISTS idx_users_app_id ON users(app_id);
       CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS fcm_token TEXT;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS device_platform VARCHAR(20) DEFAULT 'android';
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
+      CREATE INDEX IF NOT EXISTS idx_users_fcm_token ON users(fcm_token);
+
       CREATE TABLE IF NOT EXISTS connections (
         id TEXT PRIMARY KEY,
         user_one TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

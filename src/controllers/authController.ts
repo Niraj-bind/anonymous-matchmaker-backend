@@ -144,7 +144,7 @@ export async function login(req: Request, res: Response) {
     }
 
     const token = jwt.sign({ userId: user.id, appId: user.app_id }, JWT_SECRET, { expiresIn: '30d' });
-    const rating = Number(user.total_stars) / Number(user.total_ratings);
+    const rating = (Number(user.total_stars) || 5) / (Number(user.total_ratings) || 1);
 
     return res.status(200).json({
       token,
@@ -177,7 +177,7 @@ export async function getMe(req: AuthenticatedRequest, res: Response) {
     }
 
     const user = userResult.rows[0];
-    const rating = Number(user.total_stars) / Number(user.total_ratings);
+    const rating = (Number(user.total_stars) || 5) / (Number(user.total_ratings) || 1);
 
     return res.status(200).json({
       user: {

@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { query } from '../config/db';
 import { redis } from '../config/redis';
 import { getIceServers } from '../config/iceServers';
+import { sendAndroidIncomingCallPush, sendAndroidCallEndedPush } from '../config/fcm';
 
 /**
  * WebRTC Voice Calling Signaling Handler
@@ -44,7 +45,13 @@ export function registerCallHandlers(io: Server, socket: Socket) {
         return;
       }
 
-      // Check if target user is currently in another active call
+      // Check if caller or target user is currently in another active call
+      const callerActiveCall = await redis.get(`active_call:${userId}`);
+      if (callerActiveCall) {
+        socket.emit('call_error', { message: 'You are already in an active call' });
+        return;
+      }
+
       const calleeActiveCall = await redis.get(`active_call:${targetUserId}`);
       if (calleeActiveCall) {
         socket.emit('call_rejected', {
@@ -86,6 +93,24 @@ export function registerCallHandlers(io: Server, socket: Socket) {
         iceServers,
         timestamp: new Date().toISOString(),
       });
+
+      // Android Background VoIP / Full-Screen Ringtone Push
+      try {
+        const calleeResult = await query('SELECT fcm_token FROM users WHERE id = $1', [targetUserId]);
+        const targetFcmToken = calleeResult.rows[0]?.fcm_token;
+        if (targetFcmToken) {
+          sendAndroidIncomingCallPush(targetFcmToken, {
+            callId,
+            callerUserId: userId,
+            callerUsername: callerInfo.username || 'Anonymous Friend',
+            callerAppId: callerInfo.app_id || '',
+            connectionId,
+            isVideo: !!isVideo,
+          }).catch((err) => console.warn('FCM call push warning:', err));
+        }
+      } catch (fcmErr) {
+        console.warn('Could not dispatch Android call push:', fcmErr);
+      }
     } catch (error) {
       console.error('Error initiating call:', error);
       socket.emit('call_error', { message: 'Internal server error while initiating call' });
@@ -136,6 +161,15 @@ export function registerCallHandlers(io: Server, socket: Socket) {
         rejectedBy: userId,
         reason: reason || 'declined',
       });
+
+      // Notify Android device to dismiss incoming call screen
+      try {
+        const callerDb = await query('SELECT fcm_token FROM users WHERE id = $1', [callerUserId]);
+        const callerFcmToken = callerDb.rows[0]?.fcm_token;
+        if (callerFcmToken && callId) {
+          sendAndroidCallEndedPush(callerFcmToken, { callId, reason: reason || 'declined' }).catch(() => {});
+        }
+      } catch (e) {}
     } catch (error) {
       console.error('Error rejecting call:', error);
     }
@@ -215,6 +249,15 @@ export function registerCallHandlers(io: Server, socket: Socket) {
           callId,
           reason: 'normal',
         });
+
+        // Dismiss Android call UI
+        try {
+          const calleeDb = await query('SELECT fcm_token FROM users WHERE id = $1', [targetUserId]);
+          const calleeFcmToken = calleeDb.rows[0]?.fcm_token;
+          if (calleeFcmToken && callId) {
+            sendAndroidCallEndedPush(calleeFcmToken, { callId, reason: 'ended' }).catch(() => {});
+          }
+        } catch (e) {}
       }
     } catch (error) {
       console.error('Error ending call:', error);

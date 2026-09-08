@@ -123,7 +123,7 @@ async function login(req, res) {
             return res.status(401).json({ error: 'Invalid username or password' });
         }
         const token = jsonwebtoken_1.default.sign({ userId: user.id, appId: user.app_id }, JWT_SECRET, { expiresIn: '30d' });
-        const rating = Number(user.total_stars) / Number(user.total_ratings);
+        const rating = (Number(user.total_stars) || 5) / (Number(user.total_ratings) || 1);
         return res.status(200).json({
             token,
             user: {
@@ -150,7 +150,7 @@ async function getMe(req, res) {
             return res.status(404).json({ error: 'User not found' });
         }
         const user = userResult.rows[0];
-        const rating = Number(user.total_stars) / Number(user.total_ratings);
+        const rating = (Number(user.total_stars) || 5) / (Number(user.total_ratings) || 1);
         return res.status(200).json({
             user: {
                 id: user.id,

@@ -18,6 +18,8 @@ const uploadController_1 = require("./controllers/uploadController");
 const chatHandler_1 = require("./sockets/chatHandler");
 const callHandler_1 = require("./sockets/callHandler");
 const matchmaker_1 = require("./sockets/matchmaker");
+const iceServers_1 = require("./config/iceServers");
+const androidController_1 = require("./controllers/androidController");
 dotenv_1.default.config();
 const app = (0, express_1.default)();
 const PORT = process.env.PORT || 4000;
@@ -55,6 +57,9 @@ exports.io = new socket_io_1.Server(exports.server, {
         methods: ['GET', 'POST'],
     },
     maxHttpBufferSize: 1e7, // 10MB
+    pingInterval: 10000,
+    pingTimeout: 15000,
+    transports: ['websocket', 'polling'],
 });
 // Register io on Express app to avoid circular imports
 app.set('io', exports.io);
@@ -104,10 +109,12 @@ app.post('/api/anonymous/report', authMiddleware_1.authenticateToken, anonymousC
 app.post('/api/upload/temp-media', authMiddleware_1.authenticateToken, uploadController_1.uploadTempMedia);
 app.post('/api/upload/persistent-media', authMiddleware_1.authenticateToken, uploadController_1.uploadPersistentMedia);
 // WebRTC ICE Servers Configuration Route
-const iceServers_1 = require("./config/iceServers");
 app.get('/api/calls/ice-servers', authMiddleware_1.authenticateToken, (req, res) => {
     res.status(200).json({ iceServers: (0, iceServers_1.getIceServers)() });
 });
+// Dedicated Android Client Endpoints
+app.post('/api/android/device-token', authMiddleware_1.authenticateToken, androidController_1.updateDeviceToken);
+app.get('/api/android/config', androidController_1.getAndroidConfig);
 // Global Error Handler
 app.use((err, req, res, next) => {
     console.error('Unhandled Express Error:', err);

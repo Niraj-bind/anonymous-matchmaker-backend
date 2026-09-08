@@ -8,6 +8,7 @@ exports.sendPersistentMessage = sendPersistentMessage;
 exports.permanentBlock = permanentBlock;
 const uuid_1 = require("uuid");
 const db_1 = require("../config/db");
+const fcm_1 = require("../config/fcm");
 /**
  * Helper to get Socket.IO instance from Express app.
  * Avoids circular import between server.ts and connectionController.ts.
@@ -72,6 +73,22 @@ async function requestConnection(req, res) {
                 senderUserId: userId,
             });
         }
+        // Android Push Notification for Connection Request
+        try {
+            const senderInfo = await (0, db_1.query)('SELECT username, app_id FROM users WHERE id = $1', [userId]);
+            const senderRow = senderInfo.rows[0] || {};
+            const targetDb = await (0, db_1.query)('SELECT fcm_token FROM users WHERE id = $1', [targetUser.id]);
+            const targetToken = targetDb.rows[0]?.fcm_token;
+            if (targetToken) {
+                (0, fcm_1.sendAndroidConnectionRequestPush)(targetToken, {
+                    connectionId,
+                    senderId: userId,
+                    senderUsername: senderRow.username || 'Anonymous Friend',
+                    senderAppId: senderRow.app_id || '',
+                }).catch(() => { });
+            }
+        }
+        catch (e) { }
         return res.status(201).json({
             message: 'Connection request sent successfully',
             connection: createdConn,
@@ -254,6 +271,22 @@ async function sendPersistentMessage(req, res) {
             // Also emit to sender for instant UI update without needing to refresh
             io.to(`user:${userId}`).emit('new_persistent_message', createdMsg);
         }
+        // Android Push Notification for new persistent chat message
+        try {
+            const senderInfo = await (0, db_1.query)('SELECT username FROM users WHERE id = $1', [userId]);
+            const senderUsername = senderInfo.rows[0]?.username || 'Friend';
+            const receiverDb = await (0, db_1.query)('SELECT fcm_token FROM users WHERE id = $1', [receiverId]);
+            const receiverFcmToken = receiverDb.rows[0]?.fcm_token;
+            if (receiverFcmToken) {
+                (0, fcm_1.sendAndroidChatMessagePush)(receiverFcmToken, {
+                    connectionId: realConnId,
+                    senderId: userId,
+                    senderUsername,
+                    messageText: messageText || (mediaUrl ? '📷 [Image]' : ''),
+                }).catch(() => { });
+            }
+        }
+        catch (e) { }
         return res.status(201).json({
             message: 'Message sent successfully',
             data: createdMsg,

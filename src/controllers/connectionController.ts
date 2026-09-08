@@ -2,6 +2,7 @@ import { Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { query } from '../config/db';
 import { AuthenticatedRequest } from '../middleware/authMiddleware';
+import { sendAndroidChatMessagePush, sendAndroidConnectionRequestPush } from '../config/fcm';
 
 /**
  * Helper to get Socket.IO instance from Express app.
@@ -85,6 +86,23 @@ export async function requestConnection(req: AuthenticatedRequest, res: Response
         senderUserId: userId,
       });
     }
+
+    // Android Push Notification for Connection Request
+    try {
+      const senderInfo = await query('SELECT username, app_id FROM users WHERE id = $1', [userId]);
+      const senderRow = senderInfo.rows[0] || {};
+      const targetDb = await query('SELECT fcm_token FROM users WHERE id = $1', [targetUser.id]);
+      const targetToken = targetDb.rows[0]?.fcm_token;
+
+      if (targetToken) {
+        sendAndroidConnectionRequestPush(targetToken, {
+          connectionId,
+          senderId: userId,
+          senderUsername: senderRow.username || 'Anonymous Friend',
+          senderAppId: senderRow.app_id || '',
+        }).catch(() => {});
+      }
+    } catch (e) {}
 
     return res.status(201).json({
       message: 'Connection request sent successfully',
@@ -324,6 +342,23 @@ export async function sendPersistentMessage(req: AuthenticatedRequest, res: Resp
       // Also emit to sender for instant UI update without needing to refresh
       io.to(`user:${userId}`).emit('new_persistent_message', createdMsg);
     }
+
+    // Android Push Notification for new persistent chat message
+    try {
+      const senderInfo = await query('SELECT username FROM users WHERE id = $1', [userId]);
+      const senderUsername = senderInfo.rows[0]?.username || 'Friend';
+      const receiverDb = await query('SELECT fcm_token FROM users WHERE id = $1', [receiverId]);
+      const receiverFcmToken = receiverDb.rows[0]?.fcm_token;
+
+      if (receiverFcmToken) {
+        sendAndroidChatMessagePush(receiverFcmToken, {
+          connectionId: realConnId,
+          senderId: userId,
+          senderUsername,
+          messageText: messageText || (mediaUrl ? '📷 [Image]' : ''),
+        }).catch(() => {});
+      }
+    } catch (e) {}
 
     return res.status(201).json({
       message: 'Message sent successfully',
