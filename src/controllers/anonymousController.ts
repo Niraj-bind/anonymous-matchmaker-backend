@@ -35,44 +35,12 @@ export async function tempBlock(req: AuthenticatedRequest, res: Response) {
 }
 
 /**
- * Rate Anonymous Partner (1 to 5 Stars)
+ * Rate Anonymous Partner (Deprecated / Disabled)
  */
 export async function ratePartner(req: AuthenticatedRequest, res: Response) {
-  try {
-    const { targetUserId, stars } = req.body;
-
-    if (!targetUserId || stars === undefined) {
-      return res.status(400).json({ error: 'Target User ID and stars are required' });
-    }
-
-    const ratingStars = parseInt(stars, 10);
-    if (isNaN(ratingStars) || ratingStars < 1 || ratingStars > 5) {
-      return res.status(400).json({ error: 'Rating stars must be an integer between 1 and 5' });
-    }
-
-    const updateResult = await query(
-      `UPDATE users 
-       SET total_stars = total_stars + $1, total_ratings = total_ratings + 1 
-       WHERE id = $2 
-       RETURNING id, total_stars, total_ratings`,
-      [ratingStars, targetUserId]
-    );
-
-    if (updateResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Target user not found' });
-    }
-
-    const updatedUser = updateResult.rows[0];
-    const newAverage = Number(updatedUser.total_stars) / Number(updatedUser.total_ratings);
-
-    return res.status(200).json({
-      message: 'Rating submitted successfully',
-      newAverageRating: parseFloat(newAverage.toFixed(2)),
-    });
-  } catch (error) {
-    console.error('Error rating partner:', error);
-    return res.status(500).json({ error: 'Internal server error' });
-  }
+  return res.status(200).json({
+    message: 'Rating system has been disabled.',
+  });
 }
 
 /**

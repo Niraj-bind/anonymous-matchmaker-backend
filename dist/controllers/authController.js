@@ -74,21 +74,18 @@ async function register(req, res) {
         const userId = (0, uuid_1.v4)();
         const passwordHash = await bcryptjs_1.default.hash(password, 10);
         const appId = await generateUniqueAppId();
-        const insertResult = await (0, db_1.query)(`INSERT INTO users (id, username, password_hash, app_id, age, gender, total_stars, total_ratings)
-       VALUES ($1, $2, $3, $4, $5, $6, 5, 1)
-       RETURNING id, username, app_id, age, gender, total_stars, total_ratings, created_at`, [userId, username.trim(), passwordHash, appId, parsedAge, normalizedGender]);
+        const insertResult = await (0, db_1.query)(`INSERT INTO users (id, username, password_hash, app_id, age, gender)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id, username, app_id, age, gender, created_at`, [userId, username.trim(), passwordHash, appId, parsedAge, normalizedGender]);
         const newUser = insertResult.rows[0] || {
             id: userId,
             username: username.trim(),
-            app_id: appId,
+            appId: appId,
             age: parsedAge,
             gender: normalizedGender,
-            total_stars: 5,
-            total_ratings: 1,
             created_at: new Date().toISOString(),
         };
         const token = jsonwebtoken_1.default.sign({ userId: newUser.id || userId, appId: newUser.app_id || appId }, JWT_SECRET, { expiresIn: '30d' });
-        const rating = Number(newUser.total_stars || 5) / Number(newUser.total_ratings || 1);
         return res.status(201).json({
             token,
             user: {
@@ -97,7 +94,6 @@ async function register(req, res) {
                 appId: newUser.app_id || appId,
                 age: newUser.age || parsedAge,
                 gender: newUser.gender || normalizedGender,
-                rating: parseFloat(rating.toFixed(2)),
                 createdAt: newUser.created_at || new Date().toISOString(),
             },
         });
@@ -123,7 +119,6 @@ async function login(req, res) {
             return res.status(401).json({ error: 'Invalid username or password' });
         }
         const token = jsonwebtoken_1.default.sign({ userId: user.id, appId: user.app_id }, JWT_SECRET, { expiresIn: '30d' });
-        const rating = (Number(user.total_stars) || 5) / (Number(user.total_ratings) || 1);
         return res.status(200).json({
             token,
             user: {
@@ -132,7 +127,6 @@ async function login(req, res) {
                 appId: user.app_id,
                 age: user.age,
                 gender: user.gender,
-                rating: parseFloat(rating.toFixed(2)),
                 createdAt: user.created_at,
             },
         });
@@ -145,12 +139,11 @@ async function login(req, res) {
 async function getMe(req, res) {
     try {
         const userId = req.user?.userId;
-        const userResult = await (0, db_1.query)('SELECT id, username, app_id, age, gender, total_stars, total_ratings, created_at FROM users WHERE id = $1', [userId]);
+        const userResult = await (0, db_1.query)('SELECT id, username, app_id, age, gender, created_at FROM users WHERE id = $1', [userId]);
         if (userResult.rows.length === 0) {
             return res.status(404).json({ error: 'User not found' });
         }
         const user = userResult.rows[0];
-        const rating = (Number(user.total_stars) || 5) / (Number(user.total_ratings) || 1);
         return res.status(200).json({
             user: {
                 id: user.id,
@@ -158,7 +151,6 @@ async function getMe(req, res) {
                 appId: user.app_id,
                 age: user.age,
                 gender: user.gender,
-                rating: parseFloat(rating.toFixed(2)),
                 createdAt: user.created_at,
             },
         });

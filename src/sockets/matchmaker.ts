@@ -220,36 +220,15 @@ export async function processMatchmakerQueue(io: Server) {
       await redis.set(`active_session:${socketA.id}`, sessionId);
       await redis.set(`active_session:${socketB.id}`, sessionId);
 
-      // Fetch partners' star ratings from DB
-      let ratingA = 5.0;
-      let ratingB = 5.0;
-
-      try {
-        const ratingsResult = await query(
-          'SELECT id, total_stars, total_ratings FROM users WHERE id IN ($1, $2)',
-          [userA.userId, userB.userId]
-        );
-
-        for (const row of ratingsResult.rows) {
-          const avg = Number(row.total_stars) / Number(row.total_ratings);
-          if (row.id === userA.userId && !isNaN(avg)) ratingA = parseFloat(avg.toFixed(2));
-          if (row.id === userB.userId && !isNaN(avg)) ratingB = parseFloat(avg.toFixed(2));
-        }
-      } catch (e) {
-        console.warn('Could not fetch ratings, using default 5.0:', e);
-      }
-
       const payloadA = {
         sessionId,
         partnerUserId: userB.userId,
-        partnerRating: ratingB,
         status: 'Partner connected!',
       };
 
       const payloadB = {
         sessionId,
         partnerUserId: userA.userId,
-        partnerRating: ratingA,
         status: 'Partner connected!',
       };
 

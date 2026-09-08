@@ -84,26 +84,22 @@ export async function register(req: Request, res: Response) {
     const appId = await generateUniqueAppId();
 
     const insertResult = await query(
-      `INSERT INTO users (id, username, password_hash, app_id, age, gender, total_stars, total_ratings)
-       VALUES ($1, $2, $3, $4, $5, $6, 5, 1)
-       RETURNING id, username, app_id, age, gender, total_stars, total_ratings, created_at`,
+      `INSERT INTO users (id, username, password_hash, app_id, age, gender)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id, username, app_id, age, gender, created_at`,
       [userId, username.trim(), passwordHash, appId, parsedAge, normalizedGender]
     );
 
     const newUser = insertResult.rows[0] || {
       id: userId,
       username: username.trim(),
-      app_id: appId,
+      appId: appId,
       age: parsedAge,
       gender: normalizedGender,
-      total_stars: 5,
-      total_ratings: 1,
       created_at: new Date().toISOString(),
     };
 
     const token = jwt.sign({ userId: newUser.id || userId, appId: newUser.app_id || appId }, JWT_SECRET, { expiresIn: '30d' });
-
-    const rating = Number(newUser.total_stars || 5) / Number(newUser.total_ratings || 1);
 
     return res.status(201).json({
       token,
@@ -113,7 +109,6 @@ export async function register(req: Request, res: Response) {
         appId: newUser.app_id || appId,
         age: newUser.age || parsedAge,
         gender: newUser.gender || normalizedGender,
-        rating: parseFloat(rating.toFixed(2)),
         createdAt: newUser.created_at || new Date().toISOString(),
       },
     });
@@ -144,7 +139,6 @@ export async function login(req: Request, res: Response) {
     }
 
     const token = jwt.sign({ userId: user.id, appId: user.app_id }, JWT_SECRET, { expiresIn: '30d' });
-    const rating = (Number(user.total_stars) || 5) / (Number(user.total_ratings) || 1);
 
     return res.status(200).json({
       token,
@@ -154,7 +148,6 @@ export async function login(req: Request, res: Response) {
         appId: user.app_id,
         age: user.age,
         gender: user.gender,
-        rating: parseFloat(rating.toFixed(2)),
         createdAt: user.created_at,
       },
     });
@@ -168,7 +161,7 @@ export async function getMe(req: AuthenticatedRequest, res: Response) {
   try {
     const userId = req.user?.userId;
     const userResult = await query(
-      'SELECT id, username, app_id, age, gender, total_stars, total_ratings, created_at FROM users WHERE id = $1',
+      'SELECT id, username, app_id, age, gender, created_at FROM users WHERE id = $1',
       [userId]
     );
 
@@ -177,7 +170,6 @@ export async function getMe(req: AuthenticatedRequest, res: Response) {
     }
 
     const user = userResult.rows[0];
-    const rating = (Number(user.total_stars) || 5) / (Number(user.total_ratings) || 1);
 
     return res.status(200).json({
       user: {
@@ -186,7 +178,6 @@ export async function getMe(req: AuthenticatedRequest, res: Response) {
         appId: user.app_id,
         age: user.age,
         gender: user.gender,
-        rating: parseFloat(rating.toFixed(2)),
         createdAt: user.created_at,
       },
     });
