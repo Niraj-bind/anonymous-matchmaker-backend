@@ -5,12 +5,18 @@ import { redis } from '../config/redis';
 import { getIceServers } from '../config/iceServers';
 import { sendAndroidIncomingCallPush, sendAndroidCallEndedPush } from '../config/fcm';
 
+// In-memory deduplication sets to kill duplicate event storms (prevents PeerConnection disposal & glare)
+const forwardedOffers = new Set<string>();
+const forwardedAnswers = new Set<string>();
+const forwardedCandidates = new Set<string>();
+
 /**
  * WebRTC Voice Calling Signaling Handler
- * Robust Android-resilient WebRTC signaling:
- * - Tolerates mobile socket reconnection on activity/screen switches
+ * Clean single-event architecture:
+ * - Emits EXACTLY ONE canonical event for each stage (no dual event storms)
+ * - Deduplicates incoming Offer, Answer, and ICE candidates
+ * - Scopes call_accepted strictly to Caller, call_connected strictly to Callee
  * - Disconnect grace period prevents premature call termination
- * - Multi-alias event payloads for maximum Flutter WebRTC compatibility
  */
 export function registerCallHandlers(io: Server, socket: Socket) {
   const userId = socket.data.user?.userId;
@@ -99,7 +105,7 @@ export function registerCallHandlers(io: Server, socket: Socket) {
         timestamp: new Date().toISOString(),
       };
 
-      // Emit incoming_call event to recipient room
+      // Emit incoming_call event to recipient room (SINGLE EMIT)
       io.to(`user:${targetUserId}`).emit('incoming_call', incomingPayload);
 
       // Android Background VoIP / Full-Screen Ringtone Push
@@ -166,11 +172,11 @@ export function registerCallHandlers(io: Server, socket: Socket) {
       };
 
       // 1. Notify CALLER only with call_accepted. Caller is the initiator and will create the WebRTC offer.
+      // (SINGLE EMIT to caller room)
       io.to(`user:${callerUserId}`).emit('call_accepted', callerPayload);
 
       // 2. Confirm to CALLEE only with call_connected. Callee will prepare audio and wait for incoming offer.
-      // (NEVER send call_accepted to Callee to avoid WebRTC Glare / double offer collisions!)
-      socket.emit('call_connected', calleePayload);
+      // (SINGLE EMIT to callee room - NEVER send call_accepted to Callee to avoid WebRTC Glare / double offer collisions!)
       io.to(`user:${userId}`).emit('call_connected', calleePayload);
     } catch (error) {
       console.error('Error accepting call:', error);
@@ -196,8 +202,8 @@ export function registerCallHandlers(io: Server, socket: Socket) {
         reason: reason || 'declined',
       };
 
+      // SINGLE EMIT to caller room
       io.to(`user:${callerUserId}`).emit('call_rejected', rejectPayload);
-      socket.emit('call_rejected', rejectPayload);
 
       // Notify Android device to dismiss incoming call screen
       try {
@@ -213,12 +219,23 @@ export function registerCallHandlers(io: Server, socket: Socket) {
   });
 
   // 4. WebRTC SDP Offer Relay (Caller -> Callee)
+  // Deduplicates incoming offer so Callee's PeerConnection is NEVER destroyed by duplicate offers
   const handleOffer = (data: { targetUserId?: string; targetId?: string; peerId?: string; calleeUserId?: string; sdp: any; callId: string; type?: string }) => {
     const targetUserId = data.targetUserId || data.targetId || data.peerId || data.calleeUserId;
     const { sdp, callId } = data;
     if (!userId || !targetUserId || !sdp) return;
 
-    console.log(`📨 WebRTC Offer Relayed: from ${userId} -> to ${targetUserId}`);
+    // Deduplication check: only forward the offer ONCE per callId
+    if (callId) {
+      if (forwardedOffers.has(callId)) {
+        console.log(`⚠️ Duplicate WebRTC Offer suppressed for Call ID: ${callId}`);
+        return;
+      }
+      forwardedOffers.add(callId);
+      setTimeout(() => forwardedOffers.delete(callId), 15000);
+    }
+
+    console.log(`📨 WebRTC Offer Relayed: from ${userId} -> to ${targetUserId} (Call ID: ${callId})`);
 
     const payload = {
       senderId: userId,
@@ -230,20 +247,32 @@ export function registerCallHandlers(io: Server, socket: Socket) {
       callId,
     };
 
+    // SINGLE CANONICAL EMIT: emit ONLY 'webrtc_offer' to target user
     io.to(`user:${targetUserId}`).emit('webrtc_offer', payload);
-    io.to(`user:${targetUserId}`).emit('offer', payload);
   };
 
+  // Support both incoming event names from client, but handleOffer deduplicates and emits ONLY once
   socket.on('webrtc_offer', handleOffer);
   socket.on('offer', handleOffer);
 
   // 5. WebRTC SDP Answer Relay (Callee -> Caller)
+  // Deduplicates incoming answer so Caller's PeerConnection handles it exactly once
   const handleAnswer = (data: { targetUserId?: string; targetId?: string; peerId?: string; callerUserId?: string; sdp: any; callId: string; type?: string }) => {
     const targetUserId = data.targetUserId || data.targetId || data.peerId || data.callerUserId;
     const { sdp, callId } = data;
     if (!userId || !targetUserId || !sdp) return;
 
-    console.log(`📨 WebRTC Answer Relayed: from ${userId} -> to ${targetUserId}`);
+    // Deduplication check: only forward the answer ONCE per callId
+    if (callId) {
+      if (forwardedAnswers.has(callId)) {
+        console.log(`⚠️ Duplicate WebRTC Answer suppressed for Call ID: ${callId}`);
+        return;
+      }
+      forwardedAnswers.add(callId);
+      setTimeout(() => forwardedAnswers.delete(callId), 15000);
+    }
+
+    console.log(`📨 WebRTC Answer Relayed: from ${userId} -> to ${targetUserId} (Call ID: ${callId})`);
 
     const payload = {
       senderId: userId,
@@ -255,18 +284,30 @@ export function registerCallHandlers(io: Server, socket: Socket) {
       callId,
     };
 
+    // SINGLE CANONICAL EMIT: emit ONLY 'webrtc_answer' to target user
     io.to(`user:${targetUserId}`).emit('webrtc_answer', payload);
-    io.to(`user:${targetUserId}`).emit('answer', payload);
   };
 
+  // Support both incoming event names from client, but handleAnswer deduplicates and emits ONLY once
   socket.on('webrtc_answer', handleAnswer);
   socket.on('answer', handleAnswer);
 
   // 6. WebRTC ICE Candidate Relay (Bidirectional)
+  // Deduplicates candidates to eliminate candidate flood / socket congestion
   const handleIceCandidate = (data: { targetUserId?: string; targetId?: string; peerId?: string; candidate: any; callId: string }) => {
     const targetUserId = data.targetUserId || data.targetId || data.peerId;
     const { candidate, callId } = data;
     if (!userId || !targetUserId || !candidate) return;
+
+    // Candidate deduplication key
+    const candidateStr = typeof candidate === 'string' ? candidate : (candidate.candidate || JSON.stringify(candidate));
+    const candidateKey = `${callId || ''}:${targetUserId}:${candidateStr}`;
+
+    if (forwardedCandidates.has(candidateKey)) {
+      return; // Skip duplicate candidate
+    }
+    forwardedCandidates.add(candidateKey);
+    setTimeout(() => forwardedCandidates.delete(candidateKey), 10000);
 
     const payload = {
       senderId: userId,
@@ -276,9 +317,8 @@ export function registerCallHandlers(io: Server, socket: Socket) {
       callId,
     };
 
+    // SINGLE CANONICAL EMIT: emit ONLY 'ice_candidate'
     io.to(`user:${targetUserId}`).emit('ice_candidate', payload);
-    io.to(`user:${targetUserId}`).emit('webrtc_ice_candidate', payload);
-    io.to(`user:${targetUserId}`).emit('candidate', payload);
   };
 
   socket.on('ice_candidate', handleIceCandidate);
@@ -296,6 +336,11 @@ export function registerCallHandlers(io: Server, socket: Socket) {
 
       if (userId) await redis.del(`active_call:${userId}`);
       if (targetUserId) await redis.del(`active_call:${targetUserId}`);
+
+      if (callId) {
+        forwardedOffers.delete(callId);
+        forwardedAnswers.delete(callId);
+      }
 
       const endPayload = {
         endedBy: userId,
@@ -324,8 +369,6 @@ export function registerCallHandlers(io: Server, socket: Socket) {
   });
 
   // 8. Disconnect Auto-Cleanup with 10-Second Grace Period
-  // On mobile Android, when an incoming call screen opens or app transitions activities,
-  // the socket might momentarily drop and reconnect. We NEVER terminate the call immediately!
   socket.on('disconnect', async () => {
     if (!userId) return;
 
