@@ -146,6 +146,8 @@ export function registerCallHandlers(io: Server, socket: Socket) {
         targetUserId: userId,
         callerUserId,
         calleeUserId: userId,
+        role: 'caller',
+        isInitiator: true,
         iceServers,
         status: 'connected',
       };
@@ -157,18 +159,18 @@ export function registerCallHandlers(io: Server, socket: Socket) {
         targetUserId: callerUserId,
         callerUserId,
         calleeUserId: userId,
+        role: 'callee',
+        isInitiator: false,
         iceServers,
         status: 'connected',
       };
 
-      // Notify caller on all supported event names
+      // 1. Notify CALLER only with call_accepted. Caller is the initiator and will create the WebRTC offer.
       io.to(`user:${callerUserId}`).emit('call_accepted', callerPayload);
-      io.to(`user:${callerUserId}`).emit('call_connected', callerPayload);
 
-      // Confirm to callee on all supported event names
-      socket.emit('call_accepted', calleePayload);
+      // 2. Confirm to CALLEE only with call_connected. Callee will prepare audio and wait for incoming offer.
+      // (NEVER send call_accepted to Callee to avoid WebRTC Glare / double offer collisions!)
       socket.emit('call_connected', calleePayload);
-      io.to(`user:${userId}`).emit('call_accepted', calleePayload);
       io.to(`user:${userId}`).emit('call_connected', calleePayload);
     } catch (error) {
       console.error('Error accepting call:', error);
