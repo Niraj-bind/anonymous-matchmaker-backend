@@ -2,7 +2,7 @@ import { Server, Socket } from 'socket.io';
 import { v4 as uuidv4 } from 'uuid';
 import { query } from '../config/db';
 import { redis } from '../config/redis';
-import { getIceServers } from '../config/iceServers';
+import { getIceServers, hasTurnConfiguration } from '../config/iceServers';
 import { sendAndroidIncomingCallPush, sendAndroidCallEndedPush } from '../config/fcm';
 
 // In-memory deduplication sets to kill duplicate event storms (prevents PeerConnection disposal & glare)
@@ -34,6 +34,13 @@ export function registerCallHandlers(io: Server, socket: Socket) {
 
       if (!userId || !targetUserId || !connectionId) {
         socket.emit('call_error', { message: 'Target user and connection ID are required' });
+        return;
+      }
+
+      if (!hasTurnConfiguration()) {
+        socket.emit('call_error', {
+          message: 'Voice calling is unavailable until TURN_SERVER_URL, TURN_USERNAME, and TURN_CREDENTIAL are configured on the server.',
+        });
         return;
       }
 
@@ -317,8 +324,10 @@ export function registerCallHandlers(io: Server, socket: Socket) {
       callId,
     };
 
-    // SINGLE CANONICAL EMIT: emit ONLY 'ice_candidate'
+    // Keep the previous event during the APK migration. Current clients
+    // deduplicate candidates, so they will add each candidate only once.
     io.to(`user:${targetUserId}`).emit('ice_candidate', payload);
+    io.to(`user:${targetUserId}`).emit('webrtc_ice_candidate', payload);
   };
 
   socket.on('ice_candidate', handleIceCandidate);
